@@ -152,7 +152,7 @@ def evaluate_ticker(ticker, bars):
     elif price > sma20 + 1.5 * atr14:
         reasons.append("PRICE_EXTENDED")
 
-    # Rule 7 — Average daily dollar volume must exceed $20M.
+    # Rule 6 — Average daily dollar volume must exceed $20M.
     dollar_volumes = [
         close * volume
         for close, volume in zip(
@@ -182,10 +182,10 @@ def evaluate_ticker(ticker, bars):
 
 
 def get_order_plan(entry, atr14):
-    # Rule 8 — Profit target is 4.5% above the planned entry.
+    # Rule 7 — Profit target is 4.5% above the planned entry.
     target = entry * (1 + TARGET_PERCENT)
 
-    # Rule 9 — The protective stop is below entry by the larger of 2% or 1.5 ATR.
+    # Rule 8 — The protective stop is below entry by the larger of 2% or 1.5 ATR.
     stop_distance = max(entry * 0.02, 1.5 * atr14)
     stop = entry - stop_distance
     return stop, target
