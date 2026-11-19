@@ -20,7 +20,7 @@ they require manual date tracking.
 
 ## Testing each script
 
-1. These scripts and procedures are intended for macOS 27.x.x
+1. These scripts and procedures are intended for [macOS 27.x.x and Apple Shortcuts App](https://support.apple.com/guide/shortcuts/welcome/ios)
 2. Read the top of each script for any program language dependencies and ensure they are installed
 3. Execute the script using the command line ```python3 script.py```
 
@@ -38,6 +38,6 @@ Text value: Shell Script Result
 Model value: Summarize this financial market news data and inlcude the urls in the output: Text
 5. Fourth shortcut block type: Send
 Send value: Replace recipients with the iMessage recipients
-6. Using the Terminal App, input a cron for when you want the shortcut to execute ```0 7 * * 1-5 shortcuts run "The name of your shortcut"```
+6. Using the Terminal App, input a [cron](https://simplecrontab.com/guides/macos-cron-setup/) for when you want the shortcut to execute ```0 7 * * 1-5 shortcuts run "The name of your shortcut"```
 
 Recipients will receive an iMessage containing the script output when the cron job executes or on demand as you manually trigger the shortcut from the Apple shortcuts app.
