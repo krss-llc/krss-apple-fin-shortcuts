@@ -10,6 +10,7 @@ warnings.filterwarnings(
     message=r"urllib3 v2 only supports OpenSSL.*",
 )
 
+import pandas as pd
 import yfinance as yf
 
 TICKERS = [
@@ -27,117 +28,258 @@ TICKERS = [
     # Income overlay
     "JEPI", "QYLD",
 ]
-WINDOW = 20
-SMA_WINDOWS = (20, 50, 200)
-THRESHOLD = 0.01
-STOP_LOSS_PERCENT = 0.02
+
+SMA_20 = 20
+SMA_50 = 50
+VOLUME_WINDOW = 20
+ATR_WINDOW = 14
+BREAKOUT_THRESHOLD = 0.01
+VOLUME_MULTIPLE = 1.5
+MAX_AVG_DOLLAR_VOLUME = 20_000_000
 TARGET_PERCENT = 0.045
 LOG_PATH = Path(__file__).with_name("sma_alert.log")
 
 
-def get_oco_order(entry_price):
-    stop_price = entry_price * (1 - STOP_LOSS_PERCENT)
-    target_price = entry_price * (1 + TARGET_PERCENT)
-    return round(stop_price, 2), round(target_price, 2)
+def extract_series(data, field):
+    if field in data.columns:
+        series = data[field]
+    else:
+        matching_columns = [
+            column for column in data.columns
+            if isinstance(column, tuple) and field in column
+        ]
+        if not matching_columns:
+            raise KeyError(f"Missing {field} price data")
+        series = data[matching_columns[0]]
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    return pd.to_numeric(series, errors="coerce")
 
 
-def get_sma_summary(closes):
-    summaries = []
-    for window in SMA_WINDOWS:
-        if len(closes) >= window:
-            sma = sum(float(close) for close in closes[-window:]) / window
-            summaries.append(f"SMA{window} {sma:.2f}")
-        else:
-            summaries.append(f"SMA{window} N/A ({len(closes)}/{window} closes)")
-    return ", ".join(summaries)
+def get_bars(data):
+    bars = pd.concat(
+        {
+            field.lower(): extract_series(data, field)
+            for field in ("Close", "High", "Low", "Volume")
+        },
+        axis=1,
+    )
+    return bars.dropna()
 
 
-def get_20_day_high_data(closes):
-    if len(closes) < WINDOW + 1:
+def download_history(ticker):
+    return yf.download(
+        ticker,
+        period="2y",
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        multi_level_index=False,
+    )
+
+
+def average(values):
+    return sum(values) / len(values) if values else None
+
+
+def compute_atr(highs, lows, closes):
+    if min(len(highs), len(lows), len(closes)) < ATR_WINDOW + 1:
         return None
 
-    latest_price = float(closes[-1])
-    high = max(float(close) for close in closes[-(WINDOW + 1):-1])
-    return latest_price, high
+    true_ranges = []
+    for index in range(1, len(closes)):
+        true_ranges.append(max(
+            highs[index] - lows[index],
+            abs(highs[index] - closes[index - 1]),
+            abs(lows[index] - closes[index - 1]),
+        ))
+    return average(true_ranges[-ATR_WINDOW:])
+
+
+def evaluate_ticker(ticker, bars):
+    closes = bars["close"].astype(float).tolist()
+    highs = bars["high"].astype(float).tolist()
+    lows = bars["low"].astype(float).tolist()
+    volumes = bars["volume"].astype(float).tolist()
+    as_of = pd.Timestamp(bars.index[-1]).date().isoformat()
+    price = closes[-1]
+    reasons = []
+
+    # Rule 1 — Close must be at least 1% above the current 20-day SMA.
+    sma20 = average(closes[-SMA_20:]) if len(closes) >= SMA_20 else None
+    if sma20 is None:
+        reasons.append("SMA20_DATA_UNAVAILABLE")
+    elif price < sma20 * (1 + BREAKOUT_THRESHOLD):
+        reasons.append("BREAKOUT_PRICE_FAIL")
+
+    # Rule 2 — Today's volume must be at least 1.5x its 20-day average.
+    # The average includes today's bar, matching the specified yfinance test.
+    avg_volume = (
+        average(volumes[-VOLUME_WINDOW:])
+        if len(volumes) >= VOLUME_WINDOW else None
+    )
+    volume_ratio = (
+        volumes[-1] / avg_volume
+        if avg_volume is not None and avg_volume > 0 else None
+    )
+    if volume_ratio is None:
+        reasons.append("VOLUME_DATA_UNAVAILABLE")
+    elif volumes[-1] < VOLUME_MULTIPLE * avg_volume:
+        reasons.append("VOLUME_CONFIRMATION_FAIL")
+
+    # Rule 3 — Close must exceed SMA50, and SMA50 must rise from the prior session.
+    if len(closes) < SMA_50 + 1:
+        sma50 = None
+        reasons.append("SMA50_TREND_DATA_UNAVAILABLE")
+    else:
+        sma50 = average(closes[-SMA_50:])
+        sma50_previous = average(closes[-(SMA_50 + 1):-1])
+        if price <= sma50:
+            reasons.append("PRICE_NOT_ABOVE_SMA50")
+        if sma50 <= sma50_previous:
+            reasons.append("SMA50_NOT_RISING")
+
+    # Rule 4 — Today's SMA20 must be above the SMA20 from five sessions ago.
+    if len(closes) < SMA_20 + 5:
+        reasons.append("SMA20_MOMENTUM_DATA_UNAVAILABLE")
+    elif average(closes[-SMA_20:]) <= average(closes[-(SMA_20 + 5):-5]):
+        reasons.append("SMA20_MOMENTUM_FAIL")
+
+    # Rule 5 — Close must be no more than 1.5 ATR(14) above SMA20.
+    atr14 = compute_atr(highs, lows, closes)
+    if sma20 is None or atr14 is None:
+        reasons.append("ATR_EXTENSION_DATA_UNAVAILABLE")
+    elif price > sma20 + 1.5 * atr14:
+        reasons.append("PRICE_EXTENDED")
+
+    # Rule 7 — Average daily dollar volume must exceed $20M.
+    dollar_volumes = [
+        close * volume
+        for close, volume in zip(
+            closes[-VOLUME_WINDOW:], volumes[-VOLUME_WINDOW:]
+        )
+    ]
+    avg_daily_dollar_volume = (
+        average(dollar_volumes)
+        if len(dollar_volumes) == VOLUME_WINDOW else None
+    )
+    if avg_daily_dollar_volume is None:
+        reasons.append("DOLLAR_VOLUME_DATA_UNAVAILABLE")
+    elif avg_daily_dollar_volume <= MAX_AVG_DOLLAR_VOLUME:
+        reasons.append("DOLLAR_VOLUME_NOT_ABOVE_20M")
+
+    metrics = {
+        "date": as_of,
+        "ticker": ticker,
+        "close": price,
+        "sma20": sma20,
+        "sma50": sma50,
+        "atr14": atr14,
+        "volume_ratio": volume_ratio,
+        "avg_daily_dollar_volume": avg_daily_dollar_volume,
+    }
+    return metrics, reasons
+
+
+def get_order_plan(entry, atr14):
+    # Rule 8 — Profit target is 4.5% above the planned entry.
+    target = entry * (1 + TARGET_PERCENT)
+
+    # Rule 9 — The protective stop is below entry by the larger of 2% or 1.5 ATR.
+    stop_distance = max(entry * 0.02, 1.5 * atr14)
+    stop = entry - stop_distance
+    return stop, target
+
+
+def format_reasons(metrics, reasons):
+    descriptions = []
+    for reason in reasons:
+        if reason == "BREAKOUT_PRICE_FAIL" and metrics["sma20"] is not None:
+            threshold = metrics["sma20"] * (1 + BREAKOUT_THRESHOLD)
+            descriptions.append(
+                f"close ${metrics['close']:.2f} below breakout level ${threshold:.2f}"
+            )
+        elif reason == "VOLUME_CONFIRMATION_FAIL":
+            descriptions.append(
+                f"volume {metrics['volume_ratio']:.2f}x below {VOLUME_MULTIPLE:.1f}x"
+            )
+        elif reason == "PRICE_NOT_ABOVE_SMA50":
+            descriptions.append("close not above SMA50")
+        elif reason == "SMA50_NOT_RISING":
+            descriptions.append("SMA50 not rising")
+        elif reason == "SMA20_MOMENTUM_FAIL":
+            descriptions.append("SMA20 momentum is negative")
+        elif reason == "PRICE_EXTENDED":
+            descriptions.append("price is extended above SMA20 + 1.5 ATR")
+        elif reason == "DOLLAR_VOLUME_NOT_ABOVE_20M":
+            descriptions.append("average dollar volume is not above $20M")
+        elif reason.endswith("DATA_UNAVAILABLE"):
+            descriptions.append("insufficient price or volume data")
+    return "; ".join(descriptions) if descriptions else "rule check failed"
 
 
 def main():
-    qualifying_tickers = []
+    entry_setups = []
+    rejected = []
     errors = []
-    evaluated_data = []
+    dates = []
 
     for ticker in TICKERS:
         try:
-            data = yf.download(
-                ticker,
-                period="2y",
-                interval="1d",
-                auto_adjust=True,
-                progress=False,
-                multi_level_index=False,
+            bars = get_bars(download_history(ticker))
+            if bars.empty:
+                raise ValueError("no complete OHLCV bars")
+
+            metrics, reasons = evaluate_ticker(ticker, bars)
+            dates.append(metrics["date"])
+            if reasons:
+                rejected.append(
+                    f"{ticker} — {format_reasons(metrics, reasons)}"
+                )
+                continue
+
+            stop, target = get_order_plan(metrics["close"], metrics["atr14"])
+            entry_setups.append(
+                f"{ticker} — close ${metrics['close']:.2f}; "
+                f"SMA20 ${metrics['sma20']:.2f}; SMA50 ${metrics['sma50']:.2f}; "
+                f"ATR14 ${metrics['atr14']:.2f}; "
+                f"volume {metrics['volume_ratio']:.2f}x; "
+                f"avg $ volume ${metrics['avg_daily_dollar_volume'] / 1_000_000:.1f}M; "
+                f"stop ${stop:.2f}; target ${target:.2f}"
             )
-
-            if data.empty or "Close" not in data:
-                message = f"{ticker}: no price data"
-                errors.append(message)
-                evaluated_data.append(message)
-                continue
-
-            close_series = data["Close"].dropna()
-            if close_series.empty:
-                message = f"{ticker}: no closing prices"
-                errors.append(message)
-                evaluated_data.append(message)
-                continue
-
-            closes = close_series.tolist()
-            date = close_series.index[-1].strftime("%Y-%m-%d")
-            sma_summary = get_sma_summary(closes)
-            high_data = get_20_day_high_data(closes)
-            if high_data is None:
-                evaluated_data.append(
-                    f"{ticker} {date}: {sma_summary}; insufficient price history "
-                    f"({len(closes)} closes; need {WINDOW + 1})"
-                )
-                continue
-
-            latest_price, high = high_data
-            if high <= 0:
-                evaluated_data.append(
-                    f"{ticker} {date}: price {latest_price:.2f}, "
-                    f"20-day high {high:.2f} (invalid high); {sma_summary}"
-                )
-                continue
-
-            percent_above = (latest_price / high - 1) * 100
-            is_breakout = latest_price >= high * (1 + THRESHOLD)
-            status = "BREAKOUT" if is_breakout else "no breakout"
-            oco_summary = ""
-            if is_breakout:
-                stop_price, target_price = get_oco_order(latest_price)
-                oco_summary = (
-                    f"; OCO entry {latest_price:.2f}, "
-                    f"stop {stop_price:.2f}, target {target_price:.2f}"
-                )
-            evaluated_data.append(
-                f"{ticker} {date}: price {latest_price:.2f}, "
-                f"20-day high {high:.2f} ({percent_above:.2f}% above), "
-                f"{status}; {sma_summary}{oco_summary}"
-            )
-            if is_breakout:
-                qualifying_tickers.append(
-                    f"{ticker} {date}: {latest_price:.2f}, "
-                    f"20-day high {high:.2f} ({percent_above:.2f}% above)"
-                    f"{oco_summary}"
-                )
         except Exception as exc:
-            message = f"{ticker}: {exc}"
-            errors.append(message)
-            evaluated_data.append(message)
+            errors.append(f"{ticker} — {exc}")
 
-    output = "\n".join(qualifying_tickers) or "No break outs today"
-    log_output = "\n".join(evaluated_data)
-    LOG_PATH.write_text(f"{log_output}\n" if log_output else "", encoding="utf-8")
+    as_of = max(dates) if dates else "unavailable"
+    output_lines = [
+        f"SMA Entry Screen — {as_of}",
+        f"Potential setups: {len(entry_setups)} of {len(TICKERS)}",
+        "",
+        "Rules checked:",
+        "  1. Close at least 1% above the 20-day SMA.",
+        "  2. Volume at least 1.5x the 20-day average (including today).",
+        "  3. Close above the 50-day SMA, with the 50-day SMA rising.",
+        "  4. 20-day SMA above its value five sessions ago.",
+        "  5. Close no higher than SMA20 + 1.5x ATR(14).",
+        "  6. Average daily dollar volume above $20M.",
+        "  Passing setups also show a stop and a 4.5% target.",
+        "",
+    ]
+    if entry_setups:
+        output_lines.append("Potential entries (review; no orders are placed):")
+        output_lines.extend(f"  {item}" for item in entry_setups)
+    else:
+        output_lines.append("No tickers passed the entry rules.")
+
+    if rejected:
+        output_lines.extend(["", "Did not qualify:"])
+        output_lines.extend(f"  {item}" for item in rejected)
+    if errors:
+        output_lines.extend(["", "Data errors:"])
+        output_lines.extend(f"  {item}" for item in errors)
+
+    output = "\n".join(output_lines)
+    LOG_PATH.write_text(f"{output}\n", encoding="utf-8")
     print(output)
 
     if errors:

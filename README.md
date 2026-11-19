@@ -7,6 +7,17 @@ You are responsible for protecting your API keys, reviewing and running the scri
 
 KRSS.llc does not guarantee that the scripts or services will operate without errors or interruptions. To the fullest extent permitted by law, KRSS.llc disclaims responsibility for losses or damages arising from the scripts, their output, or related third-party services.
 
+## Swing-entry screening
+
+`sma_alert.py` checks the configured tickers for a 1% breakout, volume
+confirmation, rising 50-day SMA, 20-day SMA momentum, ATR extension, the
+and average daily dollar volume. It writes a readable latest-run summary to
+`sma_alert.log` and stdout, including rejection reasons and proposed stop and
+target levels for potential setups. It does not place orders.
+
+The earnings-calendar and 10-session time-stop checks are omitted because
+they require manual date tracking.
+
 ## Testing each script
 
 1. These scripts and procedures are intended for macOS 27.x.x
