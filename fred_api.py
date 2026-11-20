@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-API_KEY="***"  # FRED API key — treat as [REDACTED]
+API_KEY="***"  # FRED API key — https://fred.stlouisfed.org/docs/api/fred/
 SERIES = "OBMMIVA30YF" # https://fred.stlouisfed.org/series/OBMMIVA30YF or another series ID from https://fred.stlouisfed.org/categories/22
 LOG_FILE = Path(__file__).with_name("fred_api.log")
 OBSERVATIONS = 250
