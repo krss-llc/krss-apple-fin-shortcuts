@@ -10,13 +10,13 @@ KRSS.llc does not guarantee that the scripts or services will operate without er
 ## Swing-entry screening
 
 `sma_alert.py` checks the configured tickers for a 1% breakout, volume
-confirmation, rising 50-day SMA, 20-day SMA momentum, ATR extension, the
-and average daily dollar volume. It writes a readable latest-run summary to
-`sma_alert.log` and stdout, including rejection reasons and proposed stop and
-target levels for potential setups. It does not place orders.
-
-The earnings-calendar and 10-session time-stop checks are omitted because
-they require manual date tracking.
+confirmation, rising 50-day SMA, 20-day SMA momentum, ATR extension, average
+daily dollar volume, relative strength versus SPY, ADX and RSI, weekly trend
+alignment, pull-back volume, and sector confirmation. Earnings checks are
+omitted because the configured instruments are ETFs. The script writes a
+readable latest-run summary to `sma_alert.log` and stdout, including rejection
+reasons and proposed stop and target levels for potential setups. It does not
+place orders.
 
 ## Testing each script
 
