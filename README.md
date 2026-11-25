@@ -41,3 +41,18 @@ Send value: Replace recipients with the iMessage recipients
 6. Using the Terminal App, input a [cron](https://simplecrontab.com/guides/macos-cron-setup/) for when you want the shortcut to execute ```0 7 * * 1-5 shortcuts run "The name of your shortcut"```
 
 Recipients will receive an iMessage containing the script output when the cron job executes or on demand as you manually trigger the shortcut from the Apple shortcuts app.
+
+
+## Tip
+
+You do not "have to" use a python script (which will not work on iOS without a third party app anyway) and can just call the API directly. Here are two examples:
+
+### Checking FRED VA Mortgage Rate and trend
+```html
+https://api.stlouisfed.org/fred/series/observations?series_id=OBMMIVA30YF&file_type=json&sort_order=desc&limit=90&api_key=<your-fred-api-key>
+```
+
+### Checking NewsAPI.org for specific news
+```html
+https://newsapi.org/v2/everything?q=(retirement+AND+investing)&excludeDomains=bloomberg.com,businessinsider.com,economictimes.com,indiatimes.com&pageSize=3&language=en&sortBy=relevancy&apiKey=<your-newsapi.org-api-key>
+```
